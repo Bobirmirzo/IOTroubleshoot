@@ -1,0 +1,90 @@
+Generate a load in primary server
+=============================================================================================================
+...>diskspd.exe -b8K -d180000 -h -L -o1000 -t30 -r -w75 -c50G G:\Testdata\IO.dat > resultfile.txt
+
+===Generate insert commands from application server==
+...\RMLUtils>  .\ostress.exe -E -S"AG2019-SQLVM-1,1433"  -o"C:\temp\ff" -dtestDB -Q"INSERT INTO Table_1 (id, name) VALUES(N'test', 'test')" -n20 -r10000000
+
+
+Step 1: Check wait statistics in the server
+=============================================================================================================
+SELECT 
+    req.session_id,
+req.wait_type
+    , req.total_elapsed_time AS duration_ms
+    , req.cpu_time AS cpu_time_ms
+    , req.total_elapsed_time - req.cpu_time AS wait_time
+    , SUBSTRING (REPLACE (REPLACE (SUBSTRING (ST.text, (req.statement_start_offset/2) + 1, 
+       ((CASE statement_end_offset
+           WHEN -1
+           THEN DATALENGTH(ST.text)  
+           ELSE req.statement_end_offset
+         END - req.statement_start_offset)/2) + 1) , CHAR(10), ' '), CHAR(13), ' '), 
+      1, 512)  AS statement_text  
+FROM sys.dm_exec_requests AS req
+    CROSS APPLY sys.dm_exec_sql_text(req.sql_handle) AS ST
+ORDER BY req.total_elapsed_time DESC;
+
+
+Step 1: Additional check with powershell
+==============================================================================================================
+$sqlserver_instance = "AG2019-SQLVM-1" 
+
+for ([int]$i = 0; $i -lt 100; $i++)
+{
+   
+  sqlcmd -E -S $sqlserver_instance -Q "SELECT r.session_id, r.wait_type, r.wait_time as wait_time_ms`
+                                       FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s `
+                                        ON r.session_id = s.session_id `
+                                       WHERE wait_type in ('PAGEIOLATCH_SH', 'PAGEIOLATCH_EX', 'WRITELOG', `
+                                        'IO_COMPLETION', 'ASYNC_IO_COMPLETION', 'BACKUPIO')`
+                                       AND is_user_process = 1"
+
+  Start-Sleep -s 2
+}
+
+
+Step 1: Check which virtual file and disk is facing latency
+================================================================================================================
+#replace with server\instance or server for default instance
+$sqlserver_instance = "AG2019-SQLVM-1" 
+
+sqlcmd -E -S $sqlserver_instance -Q "SELECT   LEFT(mf.physical_name,100),   `
+         ReadLatency = CASE WHEN num_of_reads = 0 THEN 0 ELSE (io_stall_read_ms / num_of_reads) END, `
+         WriteLatency = CASE WHEN num_of_writes = 0 THEN 0 ELSE (io_stall_write_ms / num_of_writes) END, `
+         AvgLatency =  CASE WHEN (num_of_reads = 0 AND num_of_writes = 0) THEN 0 `
+                        ELSE (io_stall / (num_of_reads + num_of_writes)) END,`
+         LatencyAssessment = CASE WHEN (num_of_reads = 0 AND num_of_writes = 0) THEN 'No data' ELSE `
+               CASE WHEN (io_stall / (num_of_reads + num_of_writes)) < 2 THEN 'Excellent' `
+                    WHEN (io_stall / (num_of_reads + num_of_writes)) BETWEEN 2 AND 5 THEN 'Very good' `
+                    WHEN (io_stall / (num_of_reads + num_of_writes)) BETWEEN 6 AND 15 THEN 'Good' `
+                    WHEN (io_stall / (num_of_reads + num_of_writes)) BETWEEN 16 AND 100 THEN 'Poor' `
+                    WHEN (io_stall / (num_of_reads + num_of_writes)) BETWEEN 100 AND 500 THEN  'Bad' `
+                    ELSE 'Deplorable' END  END, `
+         [Avg KBs/Transfer] =  CASE WHEN (num_of_reads = 0 AND num_of_writes = 0) THEN 0 `
+                    ELSE ((([num_of_bytes_read] + [num_of_bytes_written]) / (num_of_reads + num_of_writes)) / 1024) END, `
+         LEFT (mf.physical_name, 2) AS Volume, `
+         LEFT(DB_NAME (vfs.database_id),32) AS [Database Name]`
+       FROM sys.dm_io_virtual_file_stats (NULL,NULL) AS vfs  `
+       JOIN sys.master_files AS mf ON vfs.database_id = mf.database_id `
+         AND vfs.file_id = mf.file_id `
+       ORDER BY AvgLatency DESC"
+============================================================================================================================
+
+
+Step 2: Run perfrmon to collect metrics
+============================================================================================================================
+Logman.exe create counter IOPerf-Data -o "c:\perflogs\IOPerf-Data.blg" -f bincirc -v mmddhhmm -max 300 -c "\LogicalDisk(*)\*" "\Memory\*" "\PhysicalDisk(*)\*" "\Processor(*)\*" "\Process(*)\*" "\System\*" -si 00:00:02 
+Logman.exe start IOPerf-Data 
+Logman.exe stop IOPerf-Data 
+
+
+Step 3: Storport Commands to collect metrics
+============================================================================================================================
+Logman.exe create trace “storport” -ow -o c:\perflogs\storport.etl -p “Microsoft-Windows-StorPort” 0xffffffffffffffff 0xff -nb 16 16 -bs 1024 -mode Circular -f bincirc -max 4096 -ets
+logman stop “storport” -ets
+
+Command to check filter drivers
+===============================================================================================================================
+fltmc filters
+
