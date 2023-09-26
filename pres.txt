@@ -81,8 +81,10 @@ Logman.exe stop IOPerf-Data
 
 Step 3: Storport Commands to collect metrics
 ============================================================================================================================
-Logman.exe create trace ìstorportî -ow -o c:\perflogs\storport.etl -p ìMicrosoft-Windows-StorPortî 0xffffffffffffffff 0xff -nb 16 16 -bs 1024 -mode Circular -f bincirc -max 4096 -ets
-logman stop ìstorportî -ets
+Logman.exe create trace ‚Äústorport‚Äù -ow -o c:\perflogs\storport.etl -p ‚ÄúMicrosoft-Windows-StorPort‚Äù 0xffffffffffffffff 0xff -nb 16 16 -bs 1024 -mode Circular -f bincirc -max 4096 -ets
+logman stop ‚Äústorport‚Äù -ets
+
+xperf -i C:\PerfLogs\storport.etl -o C:\PerfLogs\storport.csv -tle -target human
 
 Command to check filter drivers
 ===============================================================================================================================
